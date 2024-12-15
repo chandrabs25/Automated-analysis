@@ -144,7 +144,7 @@ class AutolysisAnalyzer:
 
         Output Format:
         Recommended Visualizations: [viz_type1, viz_type2]
-        Reasoning: Brief explanation of why these visualizations are recommended
+        
         """
         
         messages = [
@@ -173,13 +173,10 @@ class AutolysisAnalyzer:
                                 "type": "array",
                                 "items": {"type": "string"},
                                 "description": "List of recommended visualization types"
-                            },
-                            "reasoning": {
-                                "type": "string",
-                                "description": "Brief explanation for visualization choices"
                             }
+                            
                         },
-                        "required": ["recommended_visualizations", "reasoning"]
+                        "required": ["recommended_visualizations"]
                     }
                 }
             }],
@@ -197,10 +194,7 @@ class AutolysisAnalyzer:
         try:
             recommended_visualizations = json.loads(tool_call['function']['arguments'])['recommended_visualizations']
             print(recommended_visualizations)
-            reasoning = json.loads(tool_call['function']['arguments'])['reasoning']
             
-            # Log the reasoning
-            print(f"Visualization Recommendation Reasoning: {reasoning}")
             
             # Return first recommended visualization or fallback
             return recommended_visualizations if recommended_visualizations else self._choose_visualization_fallback()
