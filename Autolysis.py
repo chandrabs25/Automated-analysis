@@ -46,6 +46,7 @@ class AutolysisAnalyzer:
 
         # Check for token
         self.api_token = os.environ.get("AIPROXY_TOKEN")
+        '''eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIzZjIwMDExMjdAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.zbI8NhMkql_U73nURm80GXkPF8P0eY_dJtce9XPkdaA'''
         if not self.api_token:
             raise ValueError("AIPROXY_TOKEN environment variable not set.")
 
@@ -83,48 +84,34 @@ class AutolysisAnalyzer:
         return response.json()
 
     def analyze_data_structure(self) -> Dict[str, Any]:
+        # Convert numeric columns for correlation calculation
+        numeric_df = self.df.apply(pd.to_numeric, errors="coerce")
+        
+        # Calculate correlation matrix only if there are 2 or more numeric columns
         numeric_columns = list(self.df.select_dtypes(include=[np.number]).columns)
-        categorical_columns = list(self.df.select_dtypes(include=['object']).columns)
-        datetime_columns = list(self.df.select_dtypes(include=['datetime64']).columns)
+        correlation_matrix = numeric_df.corr().to_dict() if len(numeric_columns) > 1 else {}
+        
+        # Get descriptive statistics for all columns
+        stats = self.df.describe(include="all").to_dict()
+        
+        # Calculate missing values
+        missing_values = self.df.isnull().sum().to_dict()
         
         return {
             "total_rows": len(self.df),
+            "shape": self.df.shape,
             "all_columns": list(self.df.columns),
-            "numeric_columns": numeric_columns,
-            "categorical_columns": categorical_columns,
-            "datetime_columns": datetime_columns
+            "missing_values": missing_values,
+            "stats": stats,
+            "correlation_matrix": correlation_matrix
         }
 
-    def _choose_visualization(self) -> str:
+    def _choose_visualization(self) -> List[str]:
         """
         Dynamically choose the most appropriate visualization by querying the LLM
-        with simplified descriptive statistics about the dataset.
+        with a concise dataset summary.
         """
-        # Simplified descriptive stats (only count and column names)
-        desc_stats = {}
-
-        # Numeric columns descriptive stats (only count and column names)
-        if self.metadata['numeric_columns']:
-            desc_stats['numeric_columns'] = {
-                'count': len(self.metadata['numeric_columns']),
-                'column_names': self.metadata['numeric_columns']
-            }
-
-        # Categorical columns descriptive stats (only count and column names)
-        if self.metadata['categorical_columns']:
-            desc_stats['categorical_columns'] = {
-                'count': len(self.metadata['categorical_columns']),
-                'column_names': self.metadata['categorical_columns']
-            }
-
-        # Datetime columns descriptive stats (only count and column names)
-        if self.metadata['datetime_columns']:
-            desc_stats['datetime_columns'] = {
-                'count': len(self.metadata['datetime_columns']),
-                'column_names': self.metadata['datetime_columns']
-            }
-
-        # List of possible visualization types
+        # Possible visualization types
         visualization_types = [
             "correlation",  # Heatmap of numeric column correlations
             "boxplot",      # Numeric vs Categorical comparison
@@ -133,18 +120,27 @@ class AutolysisAnalyzer:
             "histogram"     # Numeric distribution
         ]
 
+        # Prepare a concise dataset summary
+        dataset_summary = {
+            "total_rows": self.metadata['total_rows'],
+            "total_columns": len(self.metadata['all_columns']),
+            "numeric_column_count": len([col for col in self.metadata['all_columns'] 
+                                        if col in self.df.select_dtypes(include=[np.number]).columns]),
+            "categorical_column_count": len([col for col in self.metadata['all_columns'] 
+                                            if col not in self.df.select_dtypes(include=[np.number]).columns]),
+            "missing_values": sum(self.metadata['missing_values'].values())
+        }
+        
         # Prepare prompt for LLM
         prompt = f"""
-        Given the following dataset descriptive statistics, recommend 1-2 visualization types that would best represent the data's characteristics.
-
-        Dataset Description:
-        {json.dumps(desc_stats, indent=2)}
+        Dataset Characteristics Summary:
+        {json.dumps(dataset_summary, indent=2)}
 
         Available Visualization Types: {visualization_types}
+        Recommend 1-2 visualization types that would best represent the data's characteristics.
 
         Output Format:
         Recommended Visualizations: [viz_type1, viz_type2]
-        
         """
         
         messages = [
@@ -174,7 +170,6 @@ class AutolysisAnalyzer:
                                 "items": {"type": "string"},
                                 "description": "List of recommended visualization types"
                             }
-                            
                         },
                         "required": ["recommended_visualizations"]
                     }
@@ -183,9 +178,9 @@ class AutolysisAnalyzer:
             tool_choice={"type": "function", "function": {"name": "recommend_visualizations"}}
         )
 
-        # Default fallback
+        # Fallback method if LLM call fails
         if not result or 'tool_calls' not in result.get('choices', [{}])[0].get('message', {}):
-            print("LLM visualization recommendation failed. Using default visualization.")
+            print("LLM visualization recommendation failed. Using fallback method.")
             return self._choose_visualization_fallback()
 
         # Extract tool call results
@@ -195,38 +190,46 @@ class AutolysisAnalyzer:
             recommended_visualizations = json.loads(tool_call['function']['arguments'])['recommended_visualizations']
             print(recommended_visualizations)
             
-            
-            # Return first recommended visualization or fallback
+            # Return recommended visualizations or fallback
             return recommended_visualizations if recommended_visualizations else self._choose_visualization_fallback()
         
         except (json.JSONDecodeError, KeyError, IndexError):
             print("Failed to parse LLM visualization recommendation. Using fallback.")
             return self._choose_visualization_fallback()
 
-
-    def _choose_visualization_fallback(self) -> str:
+    def _choose_visualization_fallback(self) -> List[str]:
         """
         Fallback method to choose visualization if LLM recommendation fails.
-        Mimics original logic with some minor improvements.
         """
-        numeric_cols = self.metadata['numeric_columns']
-        categorical_cols = self.metadata['categorical_columns']
-        datetime_cols = self.metadata['datetime_columns']
+        # Identify column types from stats and columns
+        numeric_cols = [col for col in self.metadata['all_columns'] 
+                        if any(col in subdict for subdict in [self.metadata['stats'].get('mean', {}), 
+                                                              self.metadata['stats'].get('std', {})])]
+        categorical_cols = [col for col in self.metadata['all_columns'] 
+                             if col not in numeric_cols and 
+                             (self.metadata['missing_values'].get(col, 0) < len(self.df) or 
+                              len(set(self.df[col].dropna())) < 10)]
+        datetime_cols = []  # TODO: Add logic to detect datetime columns if needed
 
         # Priority of visualization selection
+        recommended_visualizations = []
+        
         if len(numeric_cols) >= 2:
-            return "correlation"
+            recommended_visualizations.append("correlation")
         
-        if len(categorical_cols) > 0 and len(numeric_cols) > 0:
-            return "boxplot"
+        if categorical_cols and numeric_cols:
+            recommended_visualizations.append("boxplot")
         
-        if len(datetime_cols) > 0 and len(numeric_cols) > 0:
-            return "timeseries"
+        if datetime_cols and numeric_cols:
+            recommended_visualizations.append("timeseries")
         
-        if len(categorical_cols) > 0:
-            return "barplot"
+        if categorical_cols:
+            recommended_visualizations.append("barplot")
         
-        return "histogram"
+        if numeric_cols:
+            recommended_visualizations.append("histogram")
+        
+        return recommended_visualizations or ["histogram"]
 
     def plot_visualization(self):
         viz_types = self._choose_visualization()  # Assume it returns a list of visualization types
@@ -236,7 +239,7 @@ class AutolysisAnalyzer:
         visualizations = []  # List to store generated plots
         for viz_type in viz_types:
             plt.figure(figsize=(7.11, 7.11))
-            numeric_cols = self.metadata['numeric_columns']
+            numeric_cols = [col for col in self.metadata['all_columns'] if col in self.df.select_dtypes(include=[np.number]).columns]
 
             if viz_type == "correlation":
                 if len(numeric_cols) < 2:
@@ -248,15 +251,21 @@ class AutolysisAnalyzer:
                 filename = os.path.join(self.output_dir, "correlation_heatmap.png")
             
             elif viz_type == "boxplot":
-                numeric_col = self.metadata['numeric_columns'][0]
-                categorical_col = self.metadata['categorical_columns'][0]
+                if len(numeric_cols) < 1 or len(self.metadata['all_columns']) < 2:
+                    print("Not enough columns for boxplot.")
+                    continue
+                numeric_col = numeric_cols[0]
+                categorical_col = self.metadata['all_columns'][1]  # Assuming a categorical column exists
                 sns.boxplot(x=categorical_col, y=numeric_col, data=self.df)
                 plt.title(f"{numeric_col} by {categorical_col}")
                 filename = os.path.join(self.output_dir, "boxplot.png")
             
             elif viz_type == "timeseries":
-                datetime_col = self.metadata['datetime_columns'][0]
-                numeric_col = self.metadata['numeric_columns'][0]
+                if len(numeric_cols) < 1:
+                    print("Not enough numeric columns for timeseries.")
+                    continue
+                numeric_col = numeric_cols[0]
+                datetime_col = self.metadata['all_columns'][0]  # Assuming the first column is datetime
                 time_series_df = self.df.sort_values(by=datetime_col)
                 plt.plot(time_series_df[datetime_col], time_series_df[numeric_col])
                 plt.title(f"{numeric_col} Over Time")
@@ -265,13 +274,19 @@ class AutolysisAnalyzer:
                 filename = os.path.join(self.output_dir, "timeseries.png")
             
             elif viz_type == "barplot":
-                categorical_col = self.metadata['categorical_columns'][0]
+                if len(self.metadata['all_columns']) < 1:
+                    print("Not enough columns for barplot.")
+                    continue
+                categorical_col = self.metadata['all_columns'][0]
                 self.df[categorical_col].value_counts().plot(kind='bar')
                 plt.title(f"Distribution of {categorical_col}")
                 filename = os.path.join(self.output_dir, "barplot.png")
             
             else:  # histogram
-                numeric_col = self.metadata['numeric_columns'][0]
+                if len(numeric_cols) < 1:
+                    print("Not enough numeric columns for histogram.")
+                    continue
+                numeric_col = numeric_cols[0]
                 plt.hist(self.df[numeric_col], bins='auto')
                 plt.title(f"Distribution of {numeric_col}")
                 filename = os.path.join(self.output_dir, "histogram.png")
@@ -286,67 +301,75 @@ class AutolysisAnalyzer:
         return visualizations
 
 
+
     def generate_narrative(self):
         total_rows = self.metadata['total_rows']
-        cols = self.metadata['all_columns']
-        numeric_count = len(self.metadata['numeric_columns'])
-        categorical_count = len(self.metadata['categorical_columns'])
-        datetime_count = len(self.metadata['datetime_columns'])
+        missing_values = self.metadata['missing_values']
+        stats = self.metadata['stats']
 
-        prompt = f"""
-    We analyzed the dataset {os.path.basename(self.csv_path)}:
+        # Step 1: Analyze metadata (first LLM call)
+        metadata_prompt = f"""
+        Dataset Analysis Overview:
+        - Total observations: {total_rows}
+        - Number of columns: {len(self.metadata['all_columns'])}
+        - Missing values summary: {', '.join([f"{k}: {v}" for k, v in missing_values.items() if v > 0]) or 'No missing values'}
 
-    - Total observations: {total_rows}
-    - Example columns: {', '.join(cols[:5])}...
-    - Found {numeric_count} numeric columns
-    - Found {categorical_count} categorical columns
-    - Found {datetime_count} datetime columns
+        Please provide an analysis of the dataset, highlighting key observations, potential data quality issues, and initial insights without listing all columns.
+        """
 
-    We generated visualizations based on the dataset's characteristics.
-    The visualizations are included below.
-
-    Please write a Markdown story about the data analysis:
-    1. Briefly describe the dataset
-    2. Describe the visualizations and their insights
-    3. Suggest what can be done with these insights
-    """
+        metadata_analysis_response = self._call_llm([
+            {"role": "system", "content": "You are a data analyst."},
+            {"role": "user", "content": metadata_prompt.strip()}
+        ])
         
-        messages = [
-            {
-                "role": "system", 
-                "content": "You are a data storyteller."
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt.strip()
-                    }
-                ]
-            }
-        ]
+        if not metadata_analysis_response:
+            return "Metadata analysis failed."
 
-        # Only add image if visualization was created
+        metadata_analysis = metadata_analysis_response['choices'][0]['message'].get('content', '').strip()
+
+        # Step 2: Analyze visualizations (second LLM call)
+        visualization_insights = "No visualizations generated."  # Default if no visualizations exist
         if self.visualization and isinstance(self.visualization, list):
-            for image_path in self.visualization:
-                with open(image_path, "rb") as image_file:
-                    encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                    messages[1]["content"].append(
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{encoded_string}",
-                                "detail": "low"
-                            }
-                        }
-                    )
+            visualizations = "\n".join([f"- {os.path.basename(viz)}" for viz in self.visualization])
+            visualization_prompt = f"""
+            Visualizations Generated:
+            {visualizations}
+
+            Please provide key insights from these visualizations, focusing on trends, patterns, or anomalies without deep technical details.
+            """
+
+            visualization_insights_response = self._call_llm([
+                {"role": "system", "content": "You are a data visualization expert."},
+                {"role": "user", "content": visualization_prompt.strip()}
+            ])
+            
+            if visualization_insights_response:
+                visualization_insights = visualization_insights_response['choices'][0]['message'].get('content', '').strip()
+
+        # Step 3: Generate the Markdown Story (third LLM call)
+        markdown_prompt = f"""
+        Dataset Analysis Compilation:
+
+        1. Metadata Insights: {metadata_analysis}
+        2. Visualization Analysis: {visualization_insights}
+
+        Please craft a concise Markdown narrative that:
+        1. Summarizes the dataset's core characteristics
+        2. Highlights key insights from visualizations
+        3. Provides actionable recommendations or observations
+        """
+
+        markdown_response = self._call_llm([
+            {"role": "system", "content": "You are a data storyteller."},
+            {"role": "user", "content": markdown_prompt.strip()}
+        ])
+        
+        if markdown_response and "choices" in markdown_response and len(markdown_response["choices"]) > 0:
+            return markdown_response["choices"][0]["message"].get("content", "").strip()
+
+        return "Failed to generate the Markdown story."
 
 
-        result = self._call_llm(messages)
-        if result and "choices" in result and len(result["choices"]) > 0:
-            return result["choices"][0]["message"].get("content", "").strip()
-        return "No narrative generated."
 
     def run_analysis(self):
         # Generate visualizations
