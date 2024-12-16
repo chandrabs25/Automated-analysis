@@ -80,6 +80,7 @@ class AutolysisAnalyzer:
 
         self._log_request_cost(response)
         return response.json()
+    
 
     def analyze_data_structure(self) -> Dict[str, Any]:
         # Convert numeric columns for correlation calculation
@@ -194,7 +195,6 @@ class AutolysisAnalyzer:
         except (json.JSONDecodeError, KeyError, IndexError):
             print("Failed to parse LLM visualization recommendation. Using fallback.")
             return self._choose_visualization_fallback()
-
     def _choose_visualization_fallback(self) -> List[str]:
         """
         Fallback method to choose visualization if LLM recommendation fails.
