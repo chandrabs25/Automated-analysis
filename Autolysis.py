@@ -68,19 +68,22 @@ class AutolysisAnalyzer:
         payload = {
             "model": "gpt-4o-mini",
             "messages": messages,
-            "max_tokens": 1000,
+            "max_tokens": 300,
             "temperature": 0.7
         }
         if tools is not None:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
 
+        # Modify the payload structure for vision-enabled calls
+        if any(isinstance(msg.get('content', []), list) for msg in messages):
+            payload["messages"] = messages
+
         response = requests.post(self.api_url, headers=self.headers, json=payload)
         if response.status_code != 200:
             print("LLM call failed:", response.text)
             return None
-
-        self._log_request_cost(response)
+        
         return response.json()
 
     def analyze_data_structure(self) -> Dict[str, Any]:
@@ -327,24 +330,50 @@ class AutolysisAnalyzer:
 
         metadata_analysis = metadata_analysis_response['choices'][0]['message'].get('content', '').strip()
 
-        # Step 2: Analyze visualizations (second LLM call)
+        # Step 2: Analyze visualizations with vision capabilities (second LLM call)
         visualization_insights = "No visualizations generated."  # Default if no visualizations exist
         if self.visualization and isinstance(self.visualization, list):
-            visualizations = "\n".join([f"- {os.path.basename(viz)}" for viz in self.visualization])
-            visualization_prompt = f"""
-            Visualizations Generated:
-            {visualizations}
+            visualization_insights_list = []
 
-            Please provide key insights from these visualizations, focusing on trends, patterns, or anomalies without deep technical details.
-            """
+            for viz_path in self.visualization:
+                # Read the image and encode it to base64
+                try:
+                    with open(viz_path, "rb") as image_file:
+                        image_data = image_file.read()
+                        base64_image = base64.b64encode(image_data).decode('utf-8')
 
-            visualization_insights_response = self._call_llm([
-                {"role": "system", "content": "You are a data visualization expert."},
-                {"role": "user", "content": visualization_prompt.strip()}
-            ])
-            
-            if visualization_insights_response:
-                visualization_insights = visualization_insights_response['choices'][0]['message'].get('content', '').strip()
+                    # Prepare vision-enabled prompt
+                    visualization_prompt = f"""
+                    Please analyze this data visualization image and provide insights:
+                    - Identify key trends, patterns, or anomalies
+                    - Describe the type of visualization (e.g., bar chart, scatter plot)
+                    - Highlight any significant observations
+                    """
+
+                    visualization_insights_response = self._call_llm([
+                        {
+                            "role": "user", 
+                            "content": [
+                                {"type": "text", "text": visualization_prompt},
+                                {
+                                    "type": "image_url", 
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64_image}",
+                                        "detail": "low"
+                                    }
+                                }
+                            ]
+                        }
+                    ])
+                    
+                    if visualization_insights_response and "choices" in visualization_insights_response:
+                        insight = visualization_insights_response['choices'][0]['message'].get('content', '').strip()
+                        visualization_insights_list.append(f"Insights for {os.path.basename(viz_path)}: {insight}")
+
+                except Exception as e:
+                    visualization_insights_list.append(f"Error analyzing {os.path.basename(viz_path)}: {str(e)}")
+
+            visualization_insights = "\n".join(visualization_insights_list) if visualization_insights_list else "No meaningful insights generated."
 
         # Step 3: Generate the Markdown Story (third LLM call)
         markdown_prompt = f"""
