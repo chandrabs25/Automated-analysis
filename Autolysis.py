@@ -397,90 +397,9 @@ def main():
         sys.exit(1)
 
     csv_path = sys.argv[1]
-    base_filename = os.path.basename(csv_path).lower()  # Normalize for case-insensitive comparison
-
-    if base_filename == "goodreads.csv":
-        # Special handling for goodreads.csv
-        output_dir = "GoodReads"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        try:
-            df = pd.read_csv(csv_path)  # Attempt to read with default encoding
-        except UnicodeDecodeError:
-            try:
-                print("Failed to decode with 'utf-8', trying 'latin-1'")
-                df = pd.read_csv(csv_path, encoding='latin-1')
-            except UnicodeDecodeError:
-                try:
-                    print("Failed to decode with 'latin-1', trying 'cp1252'")
-                    df = pd.read_csv(csv_path, encoding='cp1252')
-                except UnicodeDecodeError:
-                    print("Failed to decode with common encodings. Please check the file's encoding.")
-                    sys.exit(1)
-
-        # Plot Correlation Matrix
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) >= 2:
-            corr = df[numeric_cols].corr()
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(corr, annot=True, cmap='coolwarm', fmt=".2f", square=True)
-            plt.title('Correlation Matrix')
-            corr_matrix_path = os.path.join(output_dir, "correlation_matrix.png")
-            plt.tight_layout()
-            plt.savefig(corr_matrix_path, dpi=72)
-            plt.close()
-            print(f"Correlation matrix saved to {corr_matrix_path}")
-        else:
-            print("Not enough numeric columns to generate a correlation matrix.")
-
-        # Plot Box Plot
-        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
-        if len(numeric_cols) >= 1 and len(categorical_cols) >= 1:
-            numeric_col = numeric_cols[0]
-            categorical_col = categorical_cols[0]
-            plt.figure(figsize=(10, 8))
-            sns.boxplot(x=categorical_col, y=numeric_col, data=df)
-            plt.title(f'Box Plot of {numeric_col} by {categorical_col}')
-            boxplot_path = os.path.join(output_dir, "boxplot.png")
-            plt.tight_layout()
-            plt.savefig(boxplot_path, dpi=72)
-            plt.close()
-            print(f"Box plot saved to {boxplot_path}")
-        else:
-            print("Not enough columns to generate a box plot.")
-
-        # Create Hard-Coded README.md
-        readme_content = f"""# GoodReads Data Analysis
-
-This analysis focuses on the GoodReads dataset, providing a Correlation Matrix and a Box Plot to understand the relationships and distributions within the data.
-
-## Visualizations
-
-- **Correlation Matrix:** ![Correlation Matrix](correlation_matrix.png)
-- **Box Plot:** ![Box Plot](boxplot.png)
-
-## Insights
-
-- **Correlation Matrix:** Displays the relationships between numeric variables. Strong correlations can indicate potential multicollinearity or interesting associations worth exploring further.
-- **Box Plot:** Illustrates the distribution of `{numeric_col}` across different categories of `{categorical_col}`. This can help identify variations and outliers within each category.
-
-*Further insights can be added based on the visualizations.*
-
-"""
-
-        readme_path = os.path.join(output_dir, "README.md")
-        with open(readme_path, "w") as f:
-            f.write(readme_content)
-        print(f"README.md has been created at {readme_path}")
-
-        print(f"GoodReads analysis complete. Please review the '{output_dir}' directory for results.")
-
-    else:
-        # Perform the usual analysis using AutolysisAnalyzer
-        analyzer = AutolysisAnalyzer(csv_path)
-        analyzer.run_analysis()
-        print(f"Analysis complete. Please review '{analyzer.output_dir}/README.md' and visualization files.")
-
+    analyzer = AutolysisAnalyzer(csv_path)
+    analyzer.run_analysis()
+    print(f"Analysis complete. Please review {analyzer.output_dir}/README.md and visualization files.")
 
 if __name__ == "__main__":
     main()
