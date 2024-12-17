@@ -253,10 +253,17 @@ class AutolysisAnalyzer:
                 if len(numeric_cols) < 1 or len(self.metadata['all_columns']) < 2:
                     print("Not enough columns for boxplot.")
                     continue
+                
                 numeric_col = numeric_cols[0]
                 categorical_col = self.metadata['all_columns'][1]  # Assuming a categorical column exists
-                sns.boxplot(x=categorical_col, y=numeric_col, data=self.df)
-                plt.title(f"{numeric_col} by {categorical_col}")
+                
+                # Limit the dataset to a random sample to improve plotting performance
+                # Use max 5000 rows or 10% of the dataset, whichever is smaller
+                max_rows = min(5000, int(0.1 * len(self.df)))
+                sampled_df = self.df.sample(n=max_rows, random_state=42)
+                
+                sns.boxplot(x=categorical_col, y=numeric_col, data=sampled_df)
+                plt.title(f"{numeric_col} by {categorical_col} (Sampled Data)")
                 filename = os.path.join(self.output_dir, "boxplot.png")
             
             elif viz_type == "timeseries":
